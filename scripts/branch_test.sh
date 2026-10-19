@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Safe schema-change testing on an ephemeral copy-on-write branch.
+# A destructive migration on the branch leaves production untouched.
+#
+# Flow: create CoW branch -> connect to its endpoint -> run migration + validate ->
+#       delete branch (or promote). Use this to test a drop/recreate-index migration or
+#       any risky DDL WITHOUT touching production.
+#
+# Usage: branch_test.sh <project_id> <branch_id> [profile]
+set -euo pipefail
+
+PROJECT="${1:?project_id required (e.g. my-lakebase-project)}"
+BRANCH="${2:?branch_id required (e.g. pr-123)}"
+PROFILE="${3:-DEFAULT}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Shared resolve+mint: pick the branch's READ_WRITE endpoint and mint an OAuth token FROM it
+# (projects/Autoscaling API) -- no database-instance name. See scripts/resolve_endpoint.sh.
+# shellcheck source=scripts/resolve_endpoint.sh
+. "$SCRIPT_DIR/resolve_endpoint.sh"
+
+echo "== create ephemeral branch (2h TTL, auto-cleanup) =="
+DB="$(lakebase_resolve_database "$SCRIPT_DIR/..")"
+lakebase_validate_database "$DB"
+databricks postgres create-branch "projects/$PROJECT" "$BRANCH" \
+  --json '{"spec":{"ttl":"7200s"}}' -p "$PROFILE" >/dev/null
+
+echo "== resolve the branch READ_WRITE endpoint + mint a credential from it =="
+lakebase_resolve_and_mint "projects/$PROJECT/branches/$BRANCH" "$PROFILE"
+echo "  host=$LB_HOST"
+echo "  endpoint=$LB_ENDPOINT"
+echo "  database=$DB"
+
+export PGHOST="$LB_HOST" PGPORT=5432 PGDATABASE="$DB" PGSSLMODE=require
+PGUSER="$(databricks auth describe -p "$PROFILE" -o json | python3 -c "import sys,json;print(json.load(sys.stdin)['username'])")"
+export PGUSER
+export PGPASSWORD="$LB_TOKEN"
+
+echo "== run your migration here against the BRANCH, then validate =="
+# Example — a drop/recreate-index pattern, tested in isolation:
+#   psql -c "DROP INDEX IF EXISTS cicd_proj.idx_members_plan_code;"
+#   psql -c "CREATE INDEX CONCURRENTLY idx_members_plan_code ON cicd_proj.members (plan_code);"
+#   psql -c "SELECT count(*) FROM cicd_proj.members;"   # validate
+
+echo "== when done: delete the branch (production was never touched) =="
+echo "   databricks postgres delete-branch projects/$PROJECT/branches/$BRANCH -p $PROFILE"

@@ -1,0 +1,9 @@
+# Copy to terraform.tfvars (gitignored) and edit for your workspace.
+# Only SHARED settings live here. Per-table entries (synced_table_id, source table,
+# primary keys, app role/schema, index columns) live in ../config/tables.json.
+databricks_profile = "DEFAULT"
+project_id         = "my-lakebase-project"
+branch             = "projects/my-lakebase-project/branches/production"
+logical_database   = "databricks_postgres"
+storage_catalog    = "my_catalog" # existing standard catalog (no CREATE CATALOG needed)
+storage_schema     = "cicd_proj"  # must exist in UC (seed_source.sh creates it)

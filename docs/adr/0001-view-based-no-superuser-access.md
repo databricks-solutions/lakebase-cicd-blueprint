@@ -1,0 +1,24 @@
+# ADR 0001 — View-based, no-superuser access to synced tables
+
+**Status:** Accepted
+
+## Context
+Synced tables are owned by an internal managed role (`databricks_writer_<dbid>`). You cannot join
+that role or change its default privileges — not even as a superuser — so `ALTER DEFAULT PRIVILEGES`
+can't grant app access to future synced objects. A view needs only `SELECT` on the synced table, which its creator is granted. Granting the table itself to the app would also need the grant option.
+
+## Decision
+Grant app access through a **consumer view owned by the deploy identity**, not the base table.
+The identity that creates a synced table is automatically granted `SELECT`; that same identity runs
+Liquibase, so it `CREATE OR REPLACE VIEW`s over the synced table and grants consumers `SELECT` on the
+**view**. Creator and view owner are kept the same identity.
+
+## Consequences
+- No `databricks_superuser` in the deploy path.
+- Consumers read the view, never the base table — a clean indirection for future row filtering (see
+  RLS note in DESIGN-NOTES).
+- Requires discipline: the synced-table creator and the view owner must be the same principal.
+- `CREATE ROLE` (changeset `001`) needs the `CREATEROLE` attribute. An admin creates each app role once;
+  the deploy identity never holds `CREATEROLE`. Every other step runs without it (tested live).
+- Objects the deploy identity creates (view, schema) can only be dropped by that identity, so keep one
+  deploy identity for the life of the tables.
